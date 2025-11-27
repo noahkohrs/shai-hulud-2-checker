@@ -66,12 +66,15 @@ def parse_index_based(csv_content, name_index, version_index):
 def update_vulnerabilities(output_json_path):
     all_packages = []
     seen = set()
+    download_success = False
     
     for source in SOURCES:
         content = download_csv(source["url"])
         if not content:
+            print(f"Failed to download from {source['url']}")
             continue
             
+        download_success = True
         print(f"Parsing data from {source['url']}...")
         extracted = []
         if source["type"] == "header_based":
@@ -86,13 +89,20 @@ def update_vulnerabilities(output_json_path):
             if key not in seen:
                 seen.add(key)
                 all_packages.append(pkg)
-                
-    print(f"Total unique vulnerable packages: {len(all_packages)}")
     
-    with open(output_json_path, 'w', encoding='utf-8') as f:
-        json.dump(all_packages, f, indent=4)
-    print(f"Saved vulnerability list to {output_json_path}")
-    
+    if download_success:
+        print(f"Total unique vulnerable packages: {len(all_packages)}")
+        with open(output_json_path, 'w', encoding='utf-8') as f:
+            json.dump(all_packages, f, indent=4)
+        print(f"Saved vulnerability list to {output_json_path}")
+    else:
+        print("Could not download vulnerabilities from any source.")
+        if os.path.exists(output_json_path):
+            print(f"Using cached vulnerabilities from {output_json_path}")
+        else:
+            print("No cached vulnerabilities found.")
+            return {}
+
     return load_vulnerable_packages(output_json_path)
 
 def load_vulnerable_packages(json_path):
