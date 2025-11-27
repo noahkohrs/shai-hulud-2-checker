@@ -4,6 +4,12 @@ import sys
 import csv
 import urllib.request
 import io
+import re
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 # Configuration for sources
 SOURCES = [
@@ -140,60 +146,102 @@ def get_package_name_from_path(path):
         return parts[-1]
     return None
 
+def parse_pnpm_key(key):
+    # Regex to parse pnpm keys like /name@version or name@version(peers)
+    # Matches:
+    # 1. Optional leading /
+    # 2. Package name (scoped or unscoped)
+    # 3. @ separator
+    # 4. Version (stops at ( or end of string)
+    pattern = r'^/?((?:@[^/]+/)?[^@]+)@([^(@]+)'
+    match = re.match(pattern, key)
+    if match:
+        return match.group(1), match.group(2)
+    return None, None
+
 def check_lockfile(lockfile_path, vulnerable_map):
     if not os.path.exists(lockfile_path):
         print(f"Error: Lockfile not found at {lockfile_path}")
         return
 
-    with open(lockfile_path, 'r', encoding='utf-8') as f:
-        lock_data = json.load(f)
-
     found_vulnerabilities = []
-
-    # Check for 'packages' (npm v2/v3)
-    if 'packages' in lock_data:
-        print(f"Scanning 'packages' in {lockfile_path}...")
-        for path, details in lock_data['packages'].items():
-            package_name = get_package_name_from_path(path)
-            if not package_name:
-                continue
-                
-            version = details.get('version')
-            
-            if package_name in vulnerable_map:
-                # Check if exact version match
-                is_exact_match = version in vulnerable_map[package_name]
-                found_vulnerabilities.append({
-                    "name": package_name,
-                    "version": version,
-                    "path": path,
-                    "match_type": "EXACT" if is_exact_match else "NAME_ONLY",
-                    "vulnerable_versions": list(vulnerable_map[package_name])
-                })
     
-    # Fallback/Check for 'dependencies' (npm v1) if 'packages' is missing or empty
-    elif 'dependencies' in lock_data:
-        print(f"Scanning 'dependencies' in {lockfile_path} (v1 format)...")
-        # Recursive function to check dependencies
-        def check_deps(deps, current_path=""):
-            for name, details in deps.items():
-                version = details.get('version')
-                path = f"{current_path}/node_modules/{name}" if current_path else f"node_modules/{name}"
+    is_yaml = lockfile_path.endswith(('.yaml', '.yml'))
+    
+    if is_yaml:
+        if yaml is None:
+            print("Error: PyYAML is not installed. Please install it with 'pip install PyYAML' to parse pnpm-lock.yaml files.")
+            return
+            
+        print(f"Parsing {lockfile_path} as YAML (pnpm)...")
+        with open(lockfile_path, 'r', encoding='utf-8') as f:
+            lock_data = yaml.safe_load(f)
+            
+        if 'packages' in lock_data:
+            for key, details in lock_data['packages'].items():
+                package_name, version = parse_pnpm_key(key)
                 
-                if name in vulnerable_map:
-                    is_exact_match = version in vulnerable_map[name]
+                if not package_name:
+                    continue
+                    
+                if package_name in vulnerable_map:
+                    is_exact_match = version in vulnerable_map[package_name]
                     found_vulnerabilities.append({
-                        "name": name,
+                        "name": package_name,
+                        "version": version,
+                        "path": key, # In pnpm, the key is the path/identifier
+                        "match_type": "EXACT" if is_exact_match else "NAME_ONLY",
+                        "vulnerable_versions": list(vulnerable_map[package_name])
+                    })
+    else:
+        print(f"Parsing {lockfile_path} as JSON (npm)...")
+        with open(lockfile_path, 'r', encoding='utf-8') as f:
+            lock_data = json.load(f)
+
+        # Check for 'packages' (npm v2/v3)
+        if 'packages' in lock_data:
+            print(f"Scanning 'packages' in {lockfile_path}...")
+            for path, details in lock_data['packages'].items():
+                package_name = get_package_name_from_path(path)
+                if not package_name:
+                    continue
+                    
+                version = details.get('version')
+                
+                if package_name in vulnerable_map:
+                    # Check if exact version match
+                    is_exact_match = version in vulnerable_map[package_name]
+                    found_vulnerabilities.append({
+                        "name": package_name,
                         "version": version,
                         "path": path,
                         "match_type": "EXACT" if is_exact_match else "NAME_ONLY",
-                        "vulnerable_versions": list(vulnerable_map[name])
+                        "vulnerable_versions": list(vulnerable_map[package_name])
                     })
-                
-                if 'dependencies' in details:
-                    check_deps(details['dependencies'], path)
+        
+        # Fallback/Check for 'dependencies' (npm v1) if 'packages' is missing or empty
+        elif 'dependencies' in lock_data:
+            print(f"Scanning 'dependencies' in {lockfile_path} (v1 format)...")
+            # Recursive function to check dependencies
+            def check_deps(deps, current_path=""):
+                for name, details in deps.items():
+                    version = details.get('version')
+                    path = f"{current_path}/node_modules/{name}" if current_path else f"node_modules/{name}"
+                    
+                    if name in vulnerable_map:
+                        is_exact_match = version in vulnerable_map[name]
+                        found_vulnerabilities.append({
+                            "name": name,
+                            "version": version,
+                            "path": path,
+                            "match_type": "EXACT" if is_exact_match else "NAME_ONLY",
+                            "vulnerable_versions": list(vulnerable_map[name])
+                        })
+                    
+                    if 'dependencies' in details:
+                        check_deps(details['dependencies'], path)
 
-        check_deps(lock_data['dependencies'])
+            check_deps(lock_data['dependencies'])
 
     # Report results
     if found_vulnerabilities:

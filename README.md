@@ -3,5 +3,5 @@ Infected packages are retreived dynamically but can run with repo's saved infect
 
 Run it with:
 ```python
-python check_shai-hulud.py <path/to/package-lock.json>
+python check-shai-hulud.py <path/to/package-lock.json>
 ```
